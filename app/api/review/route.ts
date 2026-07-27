@@ -4,6 +4,8 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { hasEditorialChange, REVIEW_INSTRUCTIONS, reviewSchema, STYLE_GUIDE_URL } from "../../../lib/review";
 
+// OpenNext runs Next.js's Node runtime on Cloudflare Workers. Its separate
+// Next.js Edge runtime is not supported by the Webflow Cloud adapter.
 export const runtime = "nodejs";
 
 const requestSchema = z.object({

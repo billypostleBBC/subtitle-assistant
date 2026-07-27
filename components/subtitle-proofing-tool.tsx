@@ -81,12 +81,24 @@ export function SubtitleProofingTool() {
     setIsReviewing(true);
     try {
       const reviewCues = cues.map(({ id, text }) => ({ id, text }));
-      const response = await fetch("/api/review", {
+      // Webflow Cloud apps can be mounted below a site's root (for example,
+      // /subtitle-proofing). Resolve the endpoint from the current app page so
+      // it does not accidentally request the parent Webflow site's /api route.
+      const appPath = window.location.pathname.replace(/\/$/, "");
+      const response = await fetch(`${appPath}/api/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cues: reviewCues }),
       });
-      const payload = (await response.json()) as { suggestions?: ReviewSuggestion[]; error?: string };
+      const responseText = await response.text();
+      let payload: { suggestions?: ReviewSuggestion[]; error?: string };
+      try {
+        payload = JSON.parse(responseText) as { suggestions?: ReviewSuggestion[]; error?: string };
+      } catch {
+        throw new Error(
+          `The proofing service returned ${response.status} ${response.statusText || "response"}, not JSON. Check the Webflow Cloud deployment and mount path.`,
+        );
+      }
       if (!response.ok || !payload.suggestions) throw new Error(payload.error || "Proofing could not be completed.");
       setSuggestions(payload.suggestions);
       setHasCompletedReview(true);
