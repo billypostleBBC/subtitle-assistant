@@ -1,0 +1,23 @@
+# Dependencies
+/node_modules
+
+# Next.js build output
+/.next
+/out
+
+# Test coverage
+/coverage
+
+# Large local media fixtures (kept locally; not required to run the app)
+/test/Video/**/*.mp4
+
+# Temporary Microsoft Office lock files
+~$*
+
+# Local environment settings (keep the example file versioned)
+.env*
+!.env.example
+
+# Local tooling
+.DS_Store
+*.tsbuildinfo
