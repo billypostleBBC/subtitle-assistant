@@ -4,14 +4,25 @@ import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { styleGuideUrlFor, type ReviewSuggestion } from "../lib/review";
 import { changedProposedSegments } from "../lib/proposed-changes";
 import { extractTranscriptText } from "../lib/docx";
-import { findOverlongCues, parseAlternatingTranscript, SubtitleCue, SubtitleFormatError, toWebVtt } from "../lib/subtitles";
+import { findOverlongCues, formatCueText, MAX_CAPTION_LINE_LENGTH, parseAlternatingTranscript, SubtitleCue, SubtitleFormatError, toWebVtt } from "../lib/subtitles";
 
 type Resolution = "approved" | "rejected" | "edited";
 type SuggestionWithResolution = ReviewSuggestion & { resolution?: Resolution; editedText?: string; isEditing?: boolean };
+type DirectCueEdit = { draft: string; isEditing: boolean; savedText?: string };
 const FRAME_RATE = 25;
 
 function ProposedText({ original, proposed }: { original: string; proposed: string }) {
   return <>{changedProposedSegments(original, proposed).map((segment, index) => segment.changed ? <mark key={index}>{segment.text}</mark> : segment.text)}</>;
+}
+
+function CaptionLayout({ text, lineCount }: { text: string; lineCount: number }) {
+  const lines = formatCueText(text).split("\n");
+  return <div className="caption-layout" role="status">
+    <p><strong>Caption layout needs attention:</strong> {lineCount} lines; maximum 2. Edit and save the final text here to resolve it. Re-upload only if the timing also needs changing.</p>
+    <div className="caption-lines" aria-label={`Caption line lengths, maximum ${MAX_CAPTION_LINE_LENGTH} characters per line`}>
+      {lines.map((line, index) => <div className="caption-line" key={`${index}-${line}`}><span>{line}</span><output>{line.length} / {MAX_CAPTION_LINE_LENGTH}</output></div>)}
+    </div>
+  </div>;
 }
 
 export function SubtitleProofingTool() {
@@ -22,12 +33,8 @@ export function SubtitleProofingTool() {
   const [error, setError] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
   const [showRemainingOnly, setShowRemainingOnly] = useState(true);
+  const [directCueEdits, setDirectCueEdits] = useState<Record<string, DirectCueEdit>>({});
 
-  const unresolved = suggestions.filter((suggestion) => !suggestion.resolution).length;
-  const resolved = suggestions.length - unresolved;
-  const visibleSuggestions = suggestions
-    .map((suggestion, index) => ({ suggestion, index }))
-    .filter(({ suggestion }) => !showRemainingOnly || !suggestion.resolution);
   const resolvedCues = useMemo(() => {
     const next = new Map(cues.map((cue) => [cue.id, cue]));
     for (const suggestion of suggestions) {
@@ -37,9 +44,24 @@ export function SubtitleProofingTool() {
       const text = suggestion.resolution === "approved" ? suggestion.proposedText : suggestion.resolution === "edited" ? suggestion.editedText?.trim() : cue.text;
       if (text) next.set(cue.id, { ...cue, text });
     }
+    for (const [cueId, edit] of Object.entries(directCueEdits)) {
+      const cue = next.get(cueId);
+      if (cue && edit.savedText?.trim()) next.set(cueId, { ...cue, text: edit.savedText.trim() });
+    }
     return [...next.values()];
-  }, [cues, suggestions]);
+  }, [cues, directCueEdits, suggestions]);
   const overlongCues = useMemo(() => findOverlongCues(resolvedCues), [resolvedCues]);
+  const overlongCueIds = useMemo(() => new Set(overlongCues.map((cue) => cue.cueId)), [overlongCues]);
+  const unresolved = suggestions.filter((suggestion) => !suggestion.resolution || overlongCueIds.has(suggestion.cueId)).length;
+  const resolved = suggestions.length - unresolved;
+  const visibleSuggestions = suggestions
+    .map((suggestion, index) => ({ suggestion, index }))
+    .filter(({ suggestion }) => !showRemainingOnly || !suggestion.resolution || overlongCueIds.has(suggestion.cueId));
+  const layoutOnlyCues = overlongCues
+    .filter((issue) => !suggestions.some((suggestion) => suggestion.cueId === issue.cueId))
+    .map((issue) => ({ issue, cue: resolvedCues.find((cue) => cue.id === issue.cueId) }))
+    .filter((item): item is { issue: typeof overlongCues[number]; cue: SubtitleCue } => Boolean(item.cue));
+  const activeStep = !cues.length ? 1 : hasCompletedReview && unresolved === 0 && overlongCues.length === 0 ? 3 : 2;
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("theme");
@@ -62,6 +84,7 @@ export function SubtitleProofingTool() {
     if (!file) return;
     setError("");
     setSuggestions([]);
+    setDirectCueEdits({});
     setHasCompletedReview(false);
     setShowRemainingOnly(true);
     try {
@@ -118,12 +141,27 @@ export function SubtitleProofingTool() {
     setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, editedText } : suggestion));
   }
 
-  function beginEdit(index: number, proposedText: string) {
-    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution: undefined, isEditing: true, editedText: suggestion.editedText ?? proposedText } : suggestion));
+  function beginEdit(index: number, finalText: string) {
+    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution: undefined, isEditing: true, editedText: suggestion.resolution === "edited" ? suggestion.editedText ?? finalText : finalText } : suggestion));
   }
 
   function saveEdit(index: number) {
     setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution: "edited", isEditing: false } : suggestion));
+  }
+
+  function beginDirectCueEdit(cue: SubtitleCue) {
+    setDirectCueEdits((current) => ({ ...current, [cue.id]: { draft: current[cue.id]?.savedText ?? cue.text, isEditing: true, savedText: current[cue.id]?.savedText } }));
+  }
+
+  function updateDirectCueEdit(cueId: string, draft: string) {
+    setDirectCueEdits((current) => ({ ...current, [cueId]: { ...current[cueId], draft, isEditing: true } }));
+  }
+
+  function saveDirectCueEdit(cueId: string) {
+    setDirectCueEdits((current) => {
+      const edit = current[cueId];
+      return edit?.draft.trim() ? { ...current, [cueId]: { ...edit, savedText: edit.draft, isEditing: false } } : current;
+    });
   }
 
   function downloadVtt() {
@@ -147,7 +185,7 @@ export function SubtitleProofingTool() {
         <p>Upload a timestamped Word transcript, resolve every evidenced editorial proposal, then download a WebVTT file.</p>
       </section>
 
-      <section className="card upload-card" aria-labelledby="upload-title">
+      <section className={`card upload-card${activeStep === 1 ? " active-step" : ""}`} aria-labelledby="upload-title">
         <h2 id="upload-title">1. Upload the transcript</h2>
         <p className="muted">Supported format: alternating timestamp and transcript lines at 25 fps.</p>
         <div className="format-example" aria-label="Timestamp and transcript example"><code>00:00:19:02 - 00:00:20:22<br />The transcript line goes here.</code></div>
@@ -158,32 +196,43 @@ export function SubtitleProofingTool() {
         {cues.length > 0 && <p className="success">Loaded {cues.length} timestamped cues. Timings will be preserved exactly.</p>}
       </section>
 
-      {cues.length > 0 && <section className="card" aria-labelledby="review-title">
-        <div className="section-heading"><div><h2 id="review-title">2. Proof the text</h2><p className="muted">The review proposes changes only. You remain responsible for every decision.</p></div><button type="button" onClick={requestReview} disabled={isReviewing}>{isReviewing ? "Proofing…" : "Run proofing review"}</button></div>
-        {suggestions.length === 0 && !isReviewing && <p>{hasCompletedReview ? "No changes were proposed. You can export the reviewed WebVTT." : "No proposals yet. Run the review to check against the BBC News Style Guide."}</p>}
+      {cues.length > 0 && <section className={`card${activeStep === 2 ? " active-step" : ""}`} aria-labelledby="review-title">
+        <div className="section-heading"><div><h2 id="review-title">2. Proof the text</h2><p className="muted">The review proposes changes only. You remain responsible for every decision.</p>{suggestions.length === 0 && !isReviewing && <p>{hasCompletedReview ? layoutOnlyCues.length ? "No editorial changes were proposed. Caption layout still needs attention below." : "No changes were proposed. You can export the reviewed WebVTT." : "No proposals yet. Run the review to check against the BBC News Style Guide."}</p>}<button className="review-button" type="button" onClick={requestReview} disabled={isReviewing}>{isReviewing ? "Proofing…" : "Run proofing review"}</button></div></div>
         {hasCompletedReview && suggestions.length > 0 && <div className="review-progress" aria-live="polite">
           <div className="review-progress-summary"><strong>{suggestions.length} proposed edit{suggestions.length === 1 ? "" : "s"}</strong><span>{resolved} of {suggestions.length} actioned</span></div>
           <div className="review-progress-track" role="progressbar" aria-label="Proposal review progress" aria-valuemin={0} aria-valuemax={suggestions.length} aria-valuenow={resolved}><span style={{ width: `${(resolved / suggestions.length) * 100}%` }} /></div>
           <label className="remaining-filter"><input type="checkbox" checked={showRemainingOnly} onChange={(event) => setShowRemainingOnly(event.target.checked)} /> Show remaining proposals only</label>
         </div>}
-        {showRemainingOnly && visibleSuggestions.length === 0 && <p className="muted">Every proposal has been actioned.</p>}
+        {hasCompletedReview && showRemainingOnly && visibleSuggestions.length === 0 && layoutOnlyCues.length === 0 && <p className="muted">Every proposal has been actioned.</p>}
         {visibleSuggestions.map(({ suggestion, index }) => {
           const cue = cues.find((item) => item.id === suggestion.cueId);
+          const finalCue = resolvedCues.find((item) => item.id === suggestion.cueId);
+          const layoutIssue = overlongCues.find((issue) => issue.cueId === suggestion.cueId);
           return <article className="suggestion" key={`${suggestion.cueId}-${index}`}>
             <p className="cue-label">Cue {suggestion.cueId} · {cue?.start} → {cue?.end}</p>
             <p><strong>Original:</strong> {cue?.text}</p>
             <p><strong>Proposed:</strong> <ProposedText original={cue?.text ?? ""} proposed={suggestion.proposedText} /></p>
             <p className="evidence">{suggestion.reason} <a href={styleGuideUrlFor(suggestion.referenceEntry)} target="_blank" rel="noreferrer"><span className="link-favicon" aria-hidden="true" />BBC News Style Guide: {suggestion.referenceEntry}</a></p>
-            <div className="resolution-actions"><button type="button" className={suggestion.resolution === "approved" ? "selected" : ""} onClick={() => resolve(index, "approved")}>Approve</button><button type="button" className={suggestion.resolution === "rejected" ? "selected" : ""} onClick={() => resolve(index, "rejected")}>Reject</button><button type="button" className={suggestion.resolution === "edited" || suggestion.isEditing ? "selected" : ""} onClick={() => beginEdit(index, suggestion.proposedText)}>Edit</button></div>
-            {suggestion.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveEdit(index); }}><label>Final text<textarea value={suggestion.editedText ?? suggestion.proposedText} onChange={(event) => updateEdit(index, event.target.value)} required /></label><button type="submit" disabled={!suggestion.editedText?.trim()}>Save edit</button></form>}
+            {layoutIssue && finalCue && <CaptionLayout text={finalCue.text} lineCount={layoutIssue.lineCount} />}
+            <div className="resolution-actions"><button type="button" className={suggestion.resolution === "approved" ? "selected" : ""} onClick={() => resolve(index, "approved")}>Approve</button><button type="button" className={suggestion.resolution === "rejected" ? "selected" : ""} onClick={() => resolve(index, "rejected")}>Reject</button><button type="button" className={suggestion.resolution === "edited" || suggestion.isEditing ? "selected" : ""} onClick={() => beginEdit(index, finalCue?.text ?? suggestion.proposedText)}>Edit</button></div>
+            {suggestion.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveEdit(index); }}><label>Final text<textarea value={suggestion.editedText ?? finalCue?.text ?? suggestion.proposedText} onChange={(event) => updateEdit(index, event.target.value)} required /></label><button type="submit" disabled={!suggestion.editedText?.trim()}>Save edit</button></form>}
+          </article>;
+        })}
+        {layoutOnlyCues.map(({ issue, cue }) => {
+          const edit = directCueEdits[cue.id];
+          return <article className="suggestion" key={`layout-${cue.id}`}>
+            <p className="cue-label">Cue {cue.id} · {cue.start} → {cue.end}</p>
+            <CaptionLayout text={cue.text} lineCount={issue.lineCount} />
+            {!edit?.isEditing && <button type="button" onClick={() => beginDirectCueEdit(cue)}>Edit final text</button>}
+            {edit?.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveDirectCueEdit(cue.id); }}><label>Final text<textarea value={edit.draft} onChange={(event) => updateDirectCueEdit(cue.id, event.target.value)} required /></label><button type="submit" disabled={!edit.draft.trim()}>Save edit</button></form>}
           </article>;
         })}
       </section>}
 
-      {cues.length > 0 && <section className="card export-card" aria-labelledby="export-title">
+      {cues.length > 0 && <section className={`card export-card${activeStep === 3 ? " active-step" : ""}`} aria-labelledby="export-title">
         <h2 id="export-title">3. Export WebVTT</h2>
         <p className="muted">{!hasCompletedReview ? "Run and complete the proofing review before exporting." : unresolved ? `${unresolved} proposal${unresolved === 1 ? "" : "s"} still need${unresolved === 1 ? "s" : ""} a decision.` : overlongCues.length ? "Caption layout needs attention before export." : suggestions.length ? "All proposals have been resolved." : "The review found no proposed changes."}</p>
-        {overlongCues.length > 0 && <p className="error" role="alert">Cue{overlongCues.length === 1 ? "" : "s"} {overlongCues.map((cue) => `${cue.cueId} (${cue.lineCount} lines)`).join(", ")} cannot fit within two 42-character caption lines. Shorten or split the affected cue timings in the source transcript, then upload it again.</p>}
+        {overlongCues.length > 0 && <p className="error" role="alert">Cue{overlongCues.length === 1 ? "" : "s"} {overlongCues.map((cue) => `${cue.cueId} (${cue.lineCount} lines)`).join(", ")} cannot fit within two 42-character caption lines. Edit and save the affected cue in this review first. Re-upload only if its timing also needs changing.</p>}
         <button type="button" onClick={downloadVtt} disabled={!hasCompletedReview || unresolved > 0 || overlongCues.length > 0}>Download .vtt</button>
       </section>}
     </main>
