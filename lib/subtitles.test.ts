@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { extractTranscriptText, normaliseWordLayoutReturns } from "./docx";
+import { extractTranscriptLines, extractTranscriptText, normaliseWordLayoutReturns, transcriptTextToImportLines } from "./docx";
 import { REVIEW_INSTRUCTIONS } from "./review";
 import { findOverlongCues, formatCueText, parseAlternatingTranscript, SubtitleFormatError, toWebVtt } from "./subtitles";
 
@@ -38,6 +38,21 @@ describe("parseAlternatingTranscript", () => {
       .toBe('<w:t>favourite,</w:t><w:t xml:space="preserve"> </w:t><w:t>please</w:t>');
     expect(normaliseWordLayoutReturns("<w:br w:type=\"page\"/>"))
       .toBe('<w:br w:type="page"/>');
+  });
+
+  it("creates stable IDs for non-empty DOCX paragraphs", () => {
+    expect(transcriptTextToImportLines("Heading\n\n00:00:00.000 --> 00:00:01.000\n Text ")).toEqual([
+      { id: "line-1", text: "Heading" },
+      { id: "line-2", text: "00:00:00.000 --> 00:00:01.000" },
+      { id: "line-3", text: "Text" },
+    ]);
+  });
+
+  it("extracts the supplied Cathay document as source lines", async () => {
+    const source = await readFile("test/Video/Cathay/CX80A-6min-Scripts.docx");
+    const lines = await extractTranscriptLines(source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength));
+    expect(lines[0]).toEqual({ id: "line-1", text: "00:00:06:12 - 00:00:09:02" });
+    expect(lines[1]).toEqual({ id: "line-2", text: "Every airline has a history." });
   });
 
   it("wraps exported cues at word boundaries into no more than two 42-character lines", () => {

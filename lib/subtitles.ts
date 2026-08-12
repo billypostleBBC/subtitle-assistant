@@ -13,6 +13,7 @@ export type OverlongCue = {
 export class SubtitleFormatError extends Error {}
 
 const TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}:\d{2})\s*-\s*(?<end>\d{2}:\d{2}:\d{2}:\d{2})$/;
+const MILLISECOND_TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(?<end>\d{2}:\d{2}:\d{2}[.,]\d{3})$/;
 export const MAX_CAPTION_LINE_LENGTH = 42;
 export const MAX_CAPTION_LINES = 2;
 
@@ -49,6 +50,30 @@ export function parseAlternatingTranscript(input: string, frameRate: number): Su
     cues.push({ id: String(cues.length + 1), start, end, text: lines[index + 1] });
   }
   return cues;
+}
+
+export function normaliseTimestampRange(input: string, frameRate: number): { start: string; end: string } {
+  const frameMatch = TIMECODE.exec(input.trim());
+  const millisecondMatch = MILLISECOND_TIMECODE.exec(input.trim());
+  let start: string;
+  let end: string;
+
+  if (frameMatch?.groups) {
+    start = toWebVttTime(frameMatch.groups.start, frameRate);
+    end = toWebVttTime(frameMatch.groups.end, frameRate);
+  } else if (millisecondMatch?.groups) {
+    start = normaliseMillisecondTime(millisecondMatch.groups.start);
+    end = normaliseMillisecondTime(millisecondMatch.groups.end);
+  } else {
+    throw new SubtitleFormatError(
+      "Use a supported timestamp: HH:MM:SS:FF - HH:MM:SS:FF at 25 fps, or HH:MM:SS.mmm --> HH:MM:SS.mmm.",
+    );
+  }
+
+  if (toMilliseconds(start) >= toMilliseconds(end)) {
+    throw new SubtitleFormatError("The timestamp ends before it starts.");
+  }
+  return { start, end };
 }
 
 export function toWebVtt(cues: SubtitleCue[]): string {
@@ -98,6 +123,16 @@ function toWebVttTime(timecode: string, frameRate: number): string {
   if (minutes > 59 || seconds > 59) throw new SubtitleFormatError(`${timecode} is not a valid timecode.`);
   const milliseconds = Math.round((frames / frameRate) * 1000);
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${String(milliseconds).padStart(3, "0")}`;
+}
+
+function normaliseMillisecondTime(timecode: string): string {
+  const canonical = timecode.replace(",", ".");
+  const [hms] = canonical.split(".");
+  const [, minutes, seconds] = hms.split(":").map(Number);
+  if (minutes > 59 || seconds > 59) {
+    throw new SubtitleFormatError(`${timecode} is not a valid timestamp.`);
+  }
+  return canonical;
 }
 
 function toMilliseconds(time: string): number {

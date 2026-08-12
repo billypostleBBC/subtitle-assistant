@@ -3,13 +3,20 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { styleGuideUrlFor, type ReviewSuggestion } from "../lib/review";
 import { changedProposedSegments } from "../lib/proposed-changes";
-import { extractTranscriptText } from "../lib/docx";
-import { findOverlongCues, formatCueText, MAX_CAPTION_LINE_LENGTH, parseAlternatingTranscript, SubtitleCue, SubtitleFormatError, toWebVtt } from "../lib/subtitles";
+import { extractTranscriptLines } from "../lib/docx";
+import type { IgnoredImportLine, SubtitleImportResult } from "../lib/import";
+import { findOverlongCues, formatCueText, MAX_CAPTION_LINE_LENGTH, SubtitleCue, SubtitleFormatError, toWebVtt } from "../lib/subtitles";
 
 type Resolution = "approved" | "rejected" | "edited";
 type SuggestionWithResolution = ReviewSuggestion & { resolution?: Resolution; editedText?: string; isEditing?: boolean };
 type DirectCueEdit = { draft: string; isEditing: boolean; savedText?: string };
-const FRAME_RATE = 25;
+
+const noiseCategoryLabels: Record<IgnoredImportLine["category"], string> = {
+  cue_number: "Cue number",
+  heading: "Heading",
+  production_note: "Production note",
+  other: "Other formatting",
+};
 
 function ProposedText({ original, proposed }: { original: string; proposed: string }) {
   return <>{changedProposedSegments(original, proposed).map((segment, index) => segment.changed ? <mark key={index}>{segment.text}</mark> : segment.text)}</>;
@@ -31,6 +38,8 @@ export function SubtitleProofingTool() {
   const [hasCompletedReview, setHasCompletedReview] = useState(false);
   const [fileBaseName, setFileBaseName] = useState("subtitles");
   const [error, setError] = useState("");
+  const [ignoredImportLines, setIgnoredImportLines] = useState<IgnoredImportLine[]>([]);
+  const [isImporting, setIsImporting] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
   const [showRemainingOnly, setShowRemainingOnly] = useState(true);
   const [directCueEdits, setDirectCueEdits] = useState<Record<string, DirectCueEdit>>({});
@@ -83,18 +92,51 @@ export function SubtitleProofingTool() {
     const file = event.target.files?.[0];
     if (!file) return;
     setError("");
+    setCues([]);
+    setIgnoredImportLines([]);
     setSuggestions([]);
     setDirectCueEdits({});
     setHasCompletedReview(false);
     setShowRemainingOnly(true);
+    setIsImporting(true);
     try {
       if (!file.name.toLowerCase().endsWith(".docx")) throw new SubtitleFormatError("Upload a .docx document.");
-      const parsed = parseAlternatingTranscript(await extractTranscriptText(await file.arrayBuffer()), FRAME_RATE);
-      setCues(parsed);
+      let lines;
+      try {
+        lines = await extractTranscriptLines(await file.arrayBuffer());
+      } catch {
+        throw new SubtitleFormatError("The Word document could not be read. Check that it is a valid .docx file and try again.");
+      }
+      if (!lines.length) throw new SubtitleFormatError("The Word document does not contain any text.");
+
+      const appPath = window.location.pathname.replace(/\/$/, "");
+      const response = await fetch(`${appPath}/api/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lines }),
+      });
+      const responseText = await response.text();
+      let payload: (Partial<SubtitleImportResult> & { error?: string });
+      try {
+        payload = JSON.parse(responseText) as Partial<SubtitleImportResult> & { error?: string };
+      } catch {
+        throw new Error(
+          `The transcript import service returned ${response.status} ${response.statusText || "response"}, not JSON. Check the Webflow Cloud deployment and mount path.`,
+        );
+      }
+      if (!response.ok || !Array.isArray(payload.cues) || !Array.isArray(payload.ignoredLines)) {
+        throw new Error(payload.error || "The transcript import service could not interpret this document.");
+      }
+
+      setCues(payload.cues);
+      setIgnoredImportLines(payload.ignoredLines);
       setFileBaseName(file.name.replace(/\.docx$/i, "") || "subtitles");
     } catch (cause) {
       setCues([]);
       setError(cause instanceof Error ? cause.message : "The document could not be read.");
+    } finally {
+      setIsImporting(false);
+      event.target.value = "";
     }
   }
 
@@ -187,13 +229,20 @@ export function SubtitleProofingTool() {
 
       <section className={`card upload-card${activeStep === 1 ? " active-step" : ""}`} aria-labelledby="upload-title">
         <h2 id="upload-title">1. Upload the transcript</h2>
-        <p className="muted">Supported format: alternating timestamp and transcript lines at 25 fps.</p>
-        <div className="format-example" aria-label="Timestamp and transcript example"><code>00:00:19:02 - 00:00:20:22<br />The transcript line goes here.</code></div>
+        <p className="muted">Upload a timestamped Word transcript. The importer identifies cue text and removes document formatting such as cue numbers, headings and production notes.</p>
+        <div className="format-example" aria-label="Supported timestamp examples"><code>00:00:19:02 - 00:00:20:22<br />01:00:19.080 --&gt; 01:00:20.880</code></div>
         <div className="upload-controls">
-          <label className="file-input">Choose .docx<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFile} /></label>
+          <label className={`file-input${isImporting ? " disabled" : ""}`}>Choose .docx<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFile} disabled={isImporting} /></label>
         </div>
+        {isImporting && <p className="muted import-status" role="status">Interpreting transcript…</p>}
         {error && <p className="error" role="alert">{error}</p>}
-        {cues.length > 0 && <p className="success">Loaded {cues.length} timestamped cues. Timings will be preserved exactly.</p>}
+        {cues.length > 0 && <>
+          <p className="success">Loaded {cues.length} timestamped cues; removed {ignoredImportLines.length} formatting line{ignoredImportLines.length === 1 ? "" : "s"}. Timings were preserved exactly.</p>
+          {ignoredImportLines.length > 0 && <details className="import-audit">
+            <summary>Review removed source lines</summary>
+            <ul>{ignoredImportLines.map((line) => <li key={line.id}><span>{noiseCategoryLabels[line.category]}</span>{line.text}</li>)}</ul>
+          </details>}
+        </>}
       </section>
 
       {cues.length > 0 && <section className={`card${activeStep === 2 ? " active-step" : ""}`} aria-labelledby="review-title">

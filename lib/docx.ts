@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import type { ImportLine } from "./import";
 
 const WORD_SPACE = '<w:t xml:space="preserve"> </w:t>';
 
@@ -22,4 +23,17 @@ export async function extractTranscriptText(arrayBuffer: ArrayBuffer): Promise<s
   const mammoth = await import("mammoth/mammoth.browser");
   const result = await mammoth.extractRawText({ arrayBuffer: normalisedDocx });
   return result.value;
+}
+
+export function transcriptTextToImportLines(text: string): ImportLine[] {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => ({ id: `line-${index + 1}`, text: line }));
+}
+
+export async function extractTranscriptLines(arrayBuffer: ArrayBuffer): Promise<ImportLine[]> {
+  return transcriptTextToImportLines(await extractTranscriptText(arrayBuffer));
 }

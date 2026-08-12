@@ -20,7 +20,10 @@ select, textarea { color: var(--ink); font: inherit; padding: 9px; border: 1px s
 button, .file-input { appearance: none; border: 1px solid var(--ink); background: var(--ink); color: var(--surface); padding: 10px 14px; font: inherit; font-weight: 700; cursor: pointer; }
 button:not(:disabled):hover, .file-input:hover, button.selected { background: var(--accent); border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: not-allowed; }
+.file-input.disabled { opacity: .45; cursor: wait; }
 .success { color: var(--approve); font-weight: 700; }.error { color: var(--reject); font-weight: 700; }
+.import-status { font-weight: 700; }
+.import-audit { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }.import-audit summary { color: var(--accent); font-weight: 700; cursor: pointer; }.import-audit ul { max-height: 260px; overflow: auto; margin: 12px 0 0; padding: 0; list-style: none; }.import-audit li { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }.import-audit li span { color: var(--muted); font-size: .9rem; font-weight: 700; }
 .format-example { display: inline-block; margin: 0 0 18px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--example); color: var(--ink); font: .9rem/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .review-progress { position: sticky; top: 0; z-index: 2; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-top: 20px; padding: 14px 0; background: var(--surface); box-shadow: 0 8px 10px -12px var(--shadow); }
 .review-progress-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: .9rem; }.review-progress-summary strong { color: var(--ink); }
