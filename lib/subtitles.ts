@@ -12,8 +12,8 @@ export type OverlongCue = {
 
 export class SubtitleFormatError extends Error {}
 
-const TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}:\d{2})\s*-\s*(?<end>\d{2}:\d{2}:\d{2}:\d{2})$/;
-const MILLISECOND_TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(?<end>\d{2}:\d{2}:\d{2}[.,]\d{3})$/;
+const TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}:\d{2})(?:\s*(?:-->|[-–—])\s*|\s+)(?<end>\d{2}:\d{2}:\d{2}:\d{2})$/;
+const MILLISECOND_TIMECODE = /^(?<start>\d{2}:\d{2}:\d{2}[.,]\d{3})(?:\s*(?:-->|[-–—])\s*|\s+)(?<end>\d{2}:\d{2}:\d{2}[.,]\d{3})$/;
 export const MAX_CAPTION_LINE_LENGTH = 42;
 export const MAX_CAPTION_LINES = 2;
 
@@ -66,7 +66,7 @@ export function normaliseTimestampRange(input: string, frameRate: number): { sta
     end = normaliseMillisecondTime(millisecondMatch.groups.end);
   } else {
     throw new SubtitleFormatError(
-      "Use a supported timestamp: HH:MM:SS:FF - HH:MM:SS:FF at 25 fps, or HH:MM:SS.mmm --> HH:MM:SS.mmm.",
+      "Use a supported timestamp: HH:MM:SS:FF at 25 fps or HH:MM:SS.mmm. Separate the start and end with spaces, a dash, or -->.",
     );
   }
 

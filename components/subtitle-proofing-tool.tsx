@@ -120,6 +120,9 @@ export function SubtitleProofingTool() {
       try {
         payload = JSON.parse(responseText) as Partial<SubtitleImportResult> & { error?: string };
       } catch {
+        if (response.status === 504) {
+          throw new Error("The transcript import took too long and Webflow Cloud ended the request. Try again; if it continues, report the source file so its layout can be supported directly.");
+        }
         throw new Error(
           `The transcript import service returned ${response.status} ${response.statusText || "response"}, not JSON. Check the Webflow Cloud deployment and mount path.`,
         );
@@ -230,7 +233,7 @@ export function SubtitleProofingTool() {
       <section className={`card upload-card${activeStep === 1 ? " active-step" : ""}`} aria-labelledby="upload-title">
         <h2 id="upload-title">1. Upload the transcript</h2>
         <p className="muted">Upload a timestamped Word transcript. The importer identifies cue text and removes document formatting such as cue numbers, headings and production notes.</p>
-        <div className="format-example" aria-label="Supported timestamp examples"><code>00:00:19:02 - 00:00:20:22<br />01:00:19.080 --&gt; 01:00:20.880</code></div>
+        <div className="format-example" aria-label="Supported timestamp examples"><code>00:00:19:02 00:00:20:22<br />00:00:19:02 - 00:00:20:22<br />01:00:19.080 --&gt; 01:00:20.880</code></div>
         <div className="upload-controls">
           <label className={`file-input${isImporting ? " disabled" : ""}`}>Choose .docx<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFile} disabled={isImporting} /></label>
         </div>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { extractTranscriptLines, extractTranscriptText, normaliseWordLayoutReturns, transcriptTextToImportLines } from "./docx";
 import { REVIEW_INSTRUCTIONS } from "./review";
+import { tryReconstructDeterministicImport } from "./import";
 import { findOverlongCues, formatCueText, parseAlternatingTranscript, SubtitleFormatError, toWebVtt } from "./subtitles";
 
 describe("parseAlternatingTranscript", () => {
@@ -53,6 +54,9 @@ describe("parseAlternatingTranscript", () => {
     const lines = await extractTranscriptLines(source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength));
     expect(lines[0]).toEqual({ id: "line-1", text: "00:00:06:12 - 00:00:09:02" });
     expect(lines[1]).toEqual({ id: "line-2", text: "Every airline has a history." });
+    const result = tryReconstructDeterministicImport(lines, 25);
+    expect(result?.cues.length).toBeGreaterThan(100);
+    expect(result?.ignoredLines).toEqual([]);
   });
 
   it("wraps exported cues at word boundaries into no more than two 42-character lines", () => {

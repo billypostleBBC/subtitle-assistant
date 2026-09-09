@@ -33,7 +33,86 @@ export type ImportClassification = z.infer<typeof importClassificationSchema>;
 
 export class SubtitleImportValidationError extends SubtitleFormatError {}
 
-const APPARENT_TIMESTAMP = /\d{2}:\d{2}:\d{2}(?::\d{1,2}|[.,]\d{1,3})?\s*(?:-->|-)\s*\d{2}:\d{2}:\d{2}/;
+const APPARENT_TIMESTAMP = /\d{2}:\d{2}:\d{2}(?::\d{1,2}|[.,]\d{1,3})?(?:\s*(?:-->|[-–—])\s*|\s+)\d{2}:\d{2}:\d{2}/;
+
+/**
+ * Structured output can occasionally repeat a cue line in ignoredLines.
+ * Keeping the cue claim is lossless; dropping it in favour of noise is not.
+ * Other duplicate claims remain untouched so reconstruction still rejects them.
+ */
+export function preferCueClaimsOverIgnoredLines(
+  classification: ImportClassification,
+): ImportClassification {
+  const cueLineIds = new Set(classification.cues.flatMap((cue) => [
+    cue.timestampLineId,
+    ...cue.textLineIds,
+  ]));
+
+  return {
+    cues: classification.cues,
+    ignoredLines: classification.ignoredLines.filter(({ lineId }) => !cueLineIds.has(lineId)),
+  };
+}
+
+/**
+ * Handles the common producer format locally: an optional sequential cue
+ * number, a supported timestamp, then one or more transcript paragraphs.
+ * Anything outside that grammar is left to the flexible classifier.
+ */
+export function tryReconstructDeterministicImport(
+  lines: ImportLine[],
+  frameRate: number,
+): SubtitleImportResult | null {
+  const classification: ImportClassification = { cues: [], ignoredLines: [] };
+  let lineIndex = 0;
+  let expectedCueNumber = 1;
+
+  const isTimestamp = (line: ImportLine | undefined) => {
+    if (!line) return false;
+    try {
+      normaliseTimestampRange(line.text, frameRate);
+      return true;
+    } catch (error) {
+      if (error instanceof SubtitleFormatError) return false;
+      throw error;
+    }
+  };
+
+  while (lineIndex < lines.length) {
+    const possibleCueNumber = lines[lineIndex];
+    if (
+      possibleCueNumber.text === String(expectedCueNumber)
+      && isTimestamp(lines[lineIndex + 1])
+    ) {
+      classification.ignoredLines.push({
+        lineId: possibleCueNumber.id,
+        category: "cue_number",
+      });
+      lineIndex += 1;
+    }
+
+    const timestampLine = lines[lineIndex];
+    if (!isTimestamp(timestampLine)) return null;
+    lineIndex += 1;
+
+    const textLineIds: string[] = [];
+    while (lineIndex < lines.length) {
+      if (isTimestamp(lines[lineIndex])) break;
+      const nextIsNumberedTimestamp = lines[lineIndex].text === String(expectedCueNumber + 1)
+        && isTimestamp(lines[lineIndex + 1]);
+      if (nextIsNumberedTimestamp) break;
+      textLineIds.push(lines[lineIndex].id);
+      lineIndex += 1;
+    }
+    if (!textLineIds.length) return null;
+
+    classification.cues.push({ timestampLineId: timestampLine.id, textLineIds });
+    expectedCueNumber += 1;
+  }
+
+  if (!classification.cues.length) return null;
+  return reconstructSubtitleImport(lines, classification, frameRate);
+}
 
 export function reconstructSubtitleImport(
   lines: ImportLine[],

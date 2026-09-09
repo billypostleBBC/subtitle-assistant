@@ -4,8 +4,10 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import {
   importClassificationSchema,
+  preferCueClaimsOverIgnoredLines,
   reconstructSubtitleImport,
   SubtitleImportValidationError,
+  tryReconstructDeterministicImport,
 } from "../../../lib/import";
 
 export const runtime = "nodejs";
@@ -25,13 +27,6 @@ Create one cue for every timestamp line, in the same order as the source. Each c
 Put every non-cue source line in ignoredLines and classify it as cue_number, heading, production_note, or other. Literal sequential numbers adjacent to timestamps are cue_number. Every supplied line ID must appear exactly once across cues and ignoredLines. If the layout is unusual, still make the best structural classification; application code will independently validate every ID, timestamp, and ordering constraint.`;
 
 export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json(
-      { error: "The transcript import service is not configured. Set OPENAI_API_KEY on the server." },
-      { status: 503 },
-    );
-  }
-
   const body = await request.json().catch(() => null);
   const parsed = requestSchema.safeParse(body);
   if (!parsed.success) {
@@ -41,8 +36,22 @@ export async function POST(request: Request) {
     );
   }
 
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   try {
+    const deterministicResult = tryReconstructDeterministicImport(parsed.data.lines, FRAME_RATE);
+    if (deterministicResult) return NextResponse.json(deterministicResult);
+
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: "The transcript import service is not configured. Set OPENAI_API_KEY on the server." },
+        { status: 503 },
+      );
+    }
+
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      maxRetries: 0,
+      timeout: 15_000,
+    });
     const response = await client.responses.parse({
       model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
       temperature: 0,
@@ -59,7 +68,11 @@ export async function POST(request: Request) {
       throw new Error("The import service did not return a structured classification.");
     }
 
-    return NextResponse.json(reconstructSubtitleImport(parsed.data.lines, classification, FRAME_RATE));
+    return NextResponse.json(reconstructSubtitleImport(
+      parsed.data.lines,
+      preferCueClaimsOverIgnoredLines(classification),
+      FRAME_RATE,
+    ));
   } catch (error) {
     if (error instanceof SubtitleImportValidationError) {
       return NextResponse.json(
