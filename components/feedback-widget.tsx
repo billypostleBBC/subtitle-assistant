@@ -66,41 +66,42 @@ export function FeedbackWidget() {
         Feedback
       </button>
 
-      {isOpen && (
+      <div
+        className={`feedback-backdrop${isOpen ? " open" : ""}`}
+        aria-hidden={!isOpen}
+        onMouseDown={(event) => {
+          if (isOpen && event.target === event.currentTarget) setIsOpen(false);
+        }}
+      >
         <div
-          className="feedback-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setIsOpen(false);
-          }}
+          ref={modalRef}
+          className="feedback-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feedback-modal-title"
         >
-          <div
-            ref={modalRef}
-            className="feedback-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="feedback-modal-title"
-          >
-            <div className="feedback-modal-header">
-              <h2 id="feedback-modal-title">Share your feedback</h2>
-              <button
-                className="feedback-modal-close"
-                type="button"
-                aria-label="Close feedback form"
-                onClick={() => setIsOpen(false)}
-              >
-                <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-                  <path d="M6 6l12 12M18 6 6 18" />
-                </svg>
-              </button>
-            </div>
-            <iframe
-              className="feedback-form"
-              src={FEEDBACK_FORM_URL}
-              title="Subtitle proofing and conversion feedback form"
-            />
+          <div className="feedback-modal-header">
+            <h2 id="feedback-modal-title">Share your feedback</h2>
+            <button
+              className="feedback-modal-close"
+              type="button"
+              aria-label="Close feedback form"
+              tabIndex={isOpen ? 0 : -1}
+              onClick={() => setIsOpen(false)}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                <path d="M6 6l12 12M18 6 6 18" />
+              </svg>
+            </button>
           </div>
+          <iframe
+            className="feedback-form"
+            src={FEEDBACK_FORM_URL}
+            title="Subtitle proofing and conversion feedback form"
+            tabIndex={isOpen ? 0 : -1}
+          />
         </div>
-      )}
+      </div>
     </>
   );
 }
