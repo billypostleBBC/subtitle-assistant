@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { hasEditorialChange, REVIEW_INSTRUCTIONS, reviewSchema, STYLE_GUIDE_URL } from "../../../lib/review";
+import { hasEditorialChange, isSupportedReviewReference, REVIEW_INSTRUCTIONS, reviewSchema } from "../../../lib/review";
 
 // OpenNext runs Next.js's Node runtime on Cloudflare Workers. Its separate
 // Next.js Edge runtime is not supported by the Webflow Cloud adapter.
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     const seenCueIds = new Set<string>();
     const safeSuggestions = output.suggestions.filter((suggestion) => {
       const originalText = cueTextById.get(suggestion.cueId);
-      if (!originalText || suggestion.referenceUrl !== STYLE_GUIDE_URL || seenCueIds.has(suggestion.cueId) || !hasEditorialChange(originalText, suggestion.proposedText)) return false;
+      if (!originalText || !isSupportedReviewReference(suggestion.referenceUrl, suggestion.referenceEntry) || seenCueIds.has(suggestion.cueId) || !hasEditorialChange(originalText, suggestion.proposedText)) return false;
       seenCueIds.add(suggestion.cueId);
       return true;
     });

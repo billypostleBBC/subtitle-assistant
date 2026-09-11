@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { styleGuideUrlFor, type ReviewSuggestion } from "../lib/review";
+import { referenceLabelFor, referenceUrlFor, type ReviewSuggestion } from "../lib/review";
 import { changedProposedSegments } from "../lib/proposed-changes";
 import { extractTranscriptLines } from "../lib/docx";
 import type { IgnoredImportLine, SubtitleImportResult } from "../lib/import";
@@ -249,7 +249,7 @@ export function SubtitleProofingTool() {
       </section>
 
       {cues.length > 0 && <section className={`card${activeStep === 2 ? " active-step" : ""}`} aria-labelledby="review-title">
-        <div className="section-heading"><div><h2 id="review-title">2. Proof the text</h2><p className="muted">The review proposes changes only. You remain responsible for every decision.</p>{suggestions.length === 0 && !isReviewing && <p>{hasCompletedReview ? layoutOnlyCues.length ? "No editorial changes were proposed. Caption layout still needs attention below." : "No changes were proposed. You can export the reviewed WebVTT." : "No proposals yet. Run the review to check against the BBC News Style Guide."}</p>}<button className="review-button" type="button" onClick={requestReview} disabled={isReviewing}>{isReviewing ? "Proofing…" : "Run proofing review"}</button></div></div>
+        <div className="section-heading"><div><h2 id="review-title">2. Proof the text</h2><p className="muted">The review proposes changes only. You remain responsible for every decision.</p>{suggestions.length === 0 && !isReviewing && <p>{hasCompletedReview ? layoutOnlyCues.length ? "No editorial changes were proposed. Caption layout still needs attention below." : "No changes were proposed. You can export the reviewed WebVTT." : "No proposals yet. Run the review against the BBC News Style Guide and BBC Subtitle Guidelines."}</p>}<button className="review-button" type="button" onClick={requestReview} disabled={isReviewing}>{isReviewing ? "Proofing…" : "Run proofing review"}</button></div></div>
         {hasCompletedReview && suggestions.length > 0 && <div className="review-progress" aria-live="polite">
           <div className="review-progress-summary"><strong>{suggestions.length} proposed edit{suggestions.length === 1 ? "" : "s"}</strong><span>{resolved} of {suggestions.length} actioned</span></div>
           <div className="review-progress-track" role="progressbar" aria-label="Proposal review progress" aria-valuemin={0} aria-valuemax={suggestions.length} aria-valuenow={resolved}><span style={{ width: `${(resolved / suggestions.length) * 100}%` }} /></div>
@@ -264,7 +264,7 @@ export function SubtitleProofingTool() {
             <p className="cue-label">Cue {suggestion.cueId} · {cue?.start} → {cue?.end}</p>
             <p><strong>Original:</strong> {cue?.text}</p>
             <p><strong>Proposed:</strong> <ProposedText original={cue?.text ?? ""} proposed={suggestion.proposedText} /></p>
-            <p className="evidence">{suggestion.reason} <a href={styleGuideUrlFor(suggestion.referenceEntry)} target="_blank" rel="noreferrer"><span className="link-favicon" aria-hidden="true" />BBC News Style Guide: {suggestion.referenceEntry}</a></p>
+            <p className="evidence">{suggestion.reason} <a href={referenceUrlFor(suggestion.referenceUrl, suggestion.referenceEntry)} target="_blank" rel="noreferrer"><span className="link-favicon" aria-hidden="true" />{referenceLabelFor(suggestion.referenceUrl)}: {suggestion.referenceEntry}</a></p>
             {layoutIssue && finalCue && <CaptionLayout text={finalCue.text} lineCount={layoutIssue.lineCount} />}
             <div className="resolution-actions"><button type="button" className={suggestion.resolution === "approved" ? "selected" : ""} onClick={() => resolve(index, "approved")}>Approve</button><button type="button" className={suggestion.resolution === "rejected" ? "selected" : ""} onClick={() => resolve(index, "rejected")}>Reject</button><button type="button" className={suggestion.resolution === "edited" || suggestion.isEditing ? "selected" : ""} onClick={() => beginEdit(index, finalCue?.text ?? suggestion.proposedText)}>Edit</button></div>
             {suggestion.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveEdit(index); }}><label>Final text<textarea value={suggestion.editedText ?? finalCue?.text ?? suggestion.proposedText} onChange={(event) => updateEdit(index, event.target.value)} required /></label><button type="submit" disabled={!suggestion.editedText?.trim()}>Save edit</button></form>}
