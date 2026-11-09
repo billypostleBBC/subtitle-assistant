@@ -115,6 +115,7 @@ describe("POST /api/import", () => {
     openAiMocks.parse.mockRejectedValue(new Error("upstream unavailable"));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await POST(importRequest());
+    expect(consoleError).toHaveBeenCalledWith("Subtitle import failed");
     consoleError.mockRestore();
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({ error: expect.stringContaining("could not interpret") });

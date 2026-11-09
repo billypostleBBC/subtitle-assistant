@@ -1,7 +1,5 @@
 type ProposedSegment = { text: string; changed: boolean };
 
-const WORD = /^[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*$/u;
-
 function tokenize(text: string) {
   return text.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*|[^\p{L}\p{N}]+/gu) ?? [];
 }
@@ -34,5 +32,5 @@ export function changedProposedSegments(original: string, proposed: string): Pro
     }
   }
 
-  return after.map((text, index) => ({ text, changed: WORD.test(text) && !unchanged.has(index) }));
+  return after.map((text, index) => ({ text, changed: Boolean(text.trim()) && !unchanged.has(index) }));
 }

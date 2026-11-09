@@ -80,7 +80,7 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     }
-    console.error("Subtitle import failed", error);
+    console.error("Subtitle import failed");
     return NextResponse.json(
       { error: "The transcript import service could not interpret this document. Check the server configuration and try again." },
       { status: 502 },

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { changedProposedSegments } from "./proposed-changes";
 
 describe("changedProposedSegments", () => {
+  it("highlights a punctuation-only replacement", () => {
+    expect(changedProposedSegments("One habit.", "One habit:").filter((segment) => segment.changed)).toEqual([{ text: ":", changed: true }]);
+  });
+
   it("highlights the proposed compound word when a hyphen is added", () => {
     expect(changedProposedSegments("an all time favourite", "an all-time favourite")).toEqual([
       { text: "an", changed: false },

@@ -1,15 +1,15 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { referenceLabelFor, referenceUrlFor, type ReviewSuggestion } from "../lib/review";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { referenceLabelFor, referenceUrlFor, validateReview, type ReviewFinding } from "../lib/review";
 import { changedProposedSegments } from "../lib/proposed-changes";
 import { extractTranscriptLines } from "../lib/docx";
 import type { IgnoredImportLine, SubtitleImportResult } from "../lib/import";
 import { findOverlongCues, formatCueText, MAX_CAPTION_LINE_LENGTH, SubtitleCue, SubtitleFormatError, toWebVtt } from "../lib/subtitles";
 
-type Resolution = "approved" | "rejected" | "edited";
-type SuggestionWithResolution = ReviewSuggestion & { resolution?: Resolution; editedText?: string; isEditing?: boolean };
-type DirectCueEdit = { draft: string; isEditing: boolean; savedText?: string };
+import { applyReviewDecisions, canExportReview, isFindingResolved, type DirectCueEdit, type FindingState, type Resolution } from "../lib/review-state";
+
+type InitialReview = { cues: SubtitleCue[]; findings: ReviewFinding[] };
 
 const noiseCategoryLabels: Record<IgnoredImportLine["category"], string> = {
   cue_number: "Cue number",
@@ -32,10 +32,11 @@ function CaptionLayout({ text, lineCount }: { text: string; lineCount: number })
   </div>;
 }
 
-export function SubtitleProofingTool() {
-  const [cues, setCues] = useState<SubtitleCue[]>([]);
-  const [suggestions, setSuggestions] = useState<SuggestionWithResolution[]>([]);
-  const [hasCompletedReview, setHasCompletedReview] = useState(false);
+export function SubtitleProofingTool({ initialReview, demonstration = false }: { initialReview?: InitialReview; demonstration?: boolean }) {
+  const [cues, setCues] = useState<SubtitleCue[]>(initialReview?.cues ?? []);
+  const [findings, setFindings] = useState<FindingState[]>(initialReview?.findings ?? []);
+  const [hasCompletedReview, setHasCompletedReview] = useState(Boolean(initialReview));
+  const progressRef = useRef<HTMLDivElement>(null);
   const [fileBaseName, setFileBaseName] = useState("subtitles");
   const [error, setError] = useState("");
   const [ignoredImportLines, setIgnoredImportLines] = useState<IgnoredImportLine[]>([]);
@@ -44,33 +45,21 @@ export function SubtitleProofingTool() {
   const [showRemainingOnly, setShowRemainingOnly] = useState(true);
   const [directCueEdits, setDirectCueEdits] = useState<Record<string, DirectCueEdit>>({});
 
-  const resolvedCues = useMemo(() => {
-    const next = new Map(cues.map((cue) => [cue.id, cue]));
-    for (const suggestion of suggestions) {
-      if (!suggestion.resolution) continue;
-      const cue = next.get(suggestion.cueId);
-      if (!cue) continue;
-      const text = suggestion.resolution === "approved" ? suggestion.proposedText : suggestion.resolution === "edited" ? suggestion.editedText?.trim() : cue.text;
-      if (text) next.set(cue.id, { ...cue, text });
-    }
-    for (const [cueId, edit] of Object.entries(directCueEdits)) {
-      const cue = next.get(cueId);
-      if (cue && edit.savedText?.trim()) next.set(cueId, { ...cue, text: edit.savedText.trim() });
-    }
-    return [...next.values()];
-  }, [cues, directCueEdits, suggestions]);
+  const resolvedCues = useMemo(() => applyReviewDecisions(cues, findings, directCueEdits), [cues, findings, directCueEdits]);
   const overlongCues = useMemo(() => findOverlongCues(resolvedCues), [resolvedCues]);
-  const overlongCueIds = useMemo(() => new Set(overlongCues.map((cue) => cue.cueId)), [overlongCues]);
-  const unresolved = suggestions.filter((suggestion) => !suggestion.resolution || overlongCueIds.has(suggestion.cueId)).length;
-  const resolved = suggestions.length - unresolved;
-  const visibleSuggestions = suggestions
-    .map((suggestion, index) => ({ suggestion, index }))
-    .filter(({ suggestion }) => !showRemainingOnly || !suggestion.resolution || overlongCueIds.has(suggestion.cueId));
+  const overlongCueIds = new Set(overlongCues.map((cue) => cue.cueId));
+  const unresolved = findings.filter((finding) => !isFindingResolved(finding)).length;
+  const editCount = findings.filter((finding) => finding.kind === "edit").length;
+  const checkCount = findings.length - editCount;
+  const resolved = findings.length - unresolved;
+  const visibleFindings = findings.map((finding, index) => ({ finding, index }))
+    .filter(({ finding }) => !showRemainingOnly || !isFindingResolved(finding) || finding.cues.some((cue) => overlongCueIds.has(cue.cueId)));
   const layoutOnlyCues = overlongCues
-    .filter((issue) => !suggestions.some((suggestion) => suggestion.cueId === issue.cueId))
-    .map((issue) => ({ issue, cue: resolvedCues.find((cue) => cue.id === issue.cueId) }))
-    .filter((item): item is { issue: typeof overlongCues[number]; cue: SubtitleCue } => Boolean(item.cue));
-  const activeStep = !cues.length ? 1 : hasCompletedReview && unresolved === 0 && overlongCues.length === 0 ? 3 : 2;
+    .filter((issue) => !findings.some((finding) => finding.cues.some((cue) => cue.cueId === issue.cueId)))
+    .map((issue) => ({ issue, cue: resolvedCues.find((cue) => cue.id === issue.cueId)! }));
+  const hasOpenEditor = findings.some((finding) => finding.isEditing) || Object.values(directCueEdits).some((edit) => edit.isEditing);
+  const exportReady = canExportReview(hasCompletedReview, findings, directCueEdits, overlongCues.length) && !isReviewing && !isImporting;
+  const activeStep = !cues.length ? 1 : exportReady ? 3 : 2;
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("theme");
@@ -94,7 +83,7 @@ export function SubtitleProofingTool() {
     setError("");
     setCues([]);
     setIgnoredImportLines([]);
-    setSuggestions([]);
+    setFindings([]);
     setDirectCueEdits({});
     setHasCompletedReview(false);
     setShowRemainingOnly(true);
@@ -144,54 +133,76 @@ export function SubtitleProofingTool() {
   }
 
   async function requestReview() {
+    if (isReviewing || isImporting || hasOpenEditor) return;
     setError("");
     setHasCompletedReview(false);
     setIsReviewing(true);
+    const sourceCues = resolvedCues;
     try {
-      const reviewCues = cues.map(({ id, text }) => ({ id, text }));
-      // Webflow Cloud apps can be mounted below a site's root (for example,
-      // /subtitle-proofing). Resolve the endpoint from the current app page so
-      // it does not accidentally request the parent Webflow site's /api route.
       const appPath = window.location.pathname.replace(/\/$/, "");
       const response = await fetch(`${appPath}/api/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cues: reviewCues }),
+        body: JSON.stringify({ cues: sourceCues.map(({ id, text }) => ({ id, text })) }),
+        signal: AbortSignal.timeout(30_000),
       });
-      const responseText = await response.text();
-      let payload: { suggestions?: ReviewSuggestion[]; error?: string };
-      try {
-        payload = JSON.parse(responseText) as { suggestions?: ReviewSuggestion[]; error?: string };
-      } catch {
-        throw new Error(
-          `The proofing service returned ${response.status} ${response.statusText || "response"}, not JSON. Check the Webflow Cloud deployment and mount path.`,
-        );
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string" ? payload.error : "Proofing could not be completed. Please try again.";
+        throw new Error(message);
       }
-      if (!response.ok || !payload.suggestions) throw new Error(payload.error || "Proofing could not be completed.");
-      setSuggestions(payload.suggestions);
+      let review;
+      try {
+        review = validateReview(payload, sourceCues);
+      } catch {
+        throw new Error("The review response could not be validated. No results were applied. Please try again.");
+      }
+      setCues(sourceCues);
+      setFindings(review.findings);
+      setDirectCueEdits({});
       setHasCompletedReview(true);
       setShowRemainingOnly(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Proofing could not be completed.");
+      setError(cause instanceof Error && cause.name === "TimeoutError" ? "Proofing timed out. Please try again or use a shorter transcript." : cause instanceof Error ? cause.message : "Proofing could not be completed.");
     } finally {
       setIsReviewing(false);
     }
   }
 
   function resolve(index: number, resolution: Resolution) {
-    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution, isEditing: false } : suggestion));
+    setFindings((current) => current.map((finding, itemIndex) => itemIndex === index ? { ...finding, resolution, isEditing: false } : finding));
+    focusProgress();
   }
 
-  function updateEdit(index: number, editedText: string) {
-    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, editedText } : suggestion));
+  function focusProgress() {
+    progressRef.current?.focus({ preventScroll: true });
+    progressRef.current?.scrollIntoView({ block: "start" });
   }
 
-  function beginEdit(index: number, finalText: string) {
-    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution: undefined, isEditing: true, editedText: suggestion.resolution === "edited" ? suggestion.editedText ?? finalText : finalText } : suggestion));
+  function beginEdit(index: number) {
+    setFindings((current) => current.map((finding, itemIndex) => itemIndex === index ? {
+      ...finding,
+      isEditing: true,
+      draftTexts: Object.fromEntries(finding.cues.map((member) => [member.cueId,
+        finding.resolution === "edited" ? finding.editedTexts![member.cueId]
+          : finding.resolution === "kept" || finding.kind === "audio_check" ? resolvedCues.find((cue) => cue.id === member.cueId)!.text
+          : member.proposedText!,
+      ])),
+    } : finding));
+  }
+
+  function updateEdit(index: number, cueId: string, text: string) {
+    setFindings((current) => current.map((finding, itemIndex) => itemIndex === index ? { ...finding, draftTexts: { ...finding.draftTexts, [cueId]: text } } : finding));
   }
 
   function saveEdit(index: number) {
-    setSuggestions((current) => current.map((suggestion, itemIndex) => itemIndex === index ? { ...suggestion, resolution: "edited", isEditing: false } : suggestion));
+    setFindings((current) => current.map((finding, itemIndex) => itemIndex === index && finding.cues.every((member) => finding.draftTexts?.[member.cueId]?.trim())
+      ? { ...finding, resolution: "edited", editedTexts: finding.draftTexts, isEditing: false } : finding));
+    focusProgress();
+  }
+
+  function cancelEdit(index: number) {
+    setFindings((current) => current.map((finding, itemIndex) => itemIndex === index ? { ...finding, isEditing: false, draftTexts: undefined } : finding));
   }
 
   function beginDirectCueEdit(cue: SubtitleCue) {
@@ -210,6 +221,7 @@ export function SubtitleProofingTool() {
   }
 
   function downloadVtt() {
+    if (!exportReady) return;
     const blob = new Blob([toWebVtt(resolvedCues)], { type: "text/vtt;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -227,16 +239,17 @@ export function SubtitleProofingTool() {
       </button>
       <section className="intro">
         <h1>Subtitle proofing and conversion</h1>
-        <p>Upload a timestamped Word transcript, resolve every evidenced editorial proposal, then download a WebVTT file.</p>
+        <p>Review subtitle text in context, resolve proposed edits and audio checks, then download a WebVTT file.</p>
       </section>
 
+      {demonstration && <aside className="demo-notice"><strong>Local demonstration</strong><p>These are fixed examples for trying the controls, not a live AI review. The transcript is invented.</p><button type="button" onClick={() => { setCues(initialReview!.cues); setFindings(initialReview!.findings); setDirectCueEdits({}); setHasCompletedReview(true); setShowRemainingOnly(true); setError(""); }}>Reset demonstration</button></aside>}
       <section className={`card upload-card${activeStep === 1 ? " active-step" : ""}`} aria-labelledby="upload-title">
         <h2 id="upload-title">1. Upload the transcript</h2>
         <p className="muted">Upload a timestamped Word transcript. The importer identifies cue text and removes document formatting such as cue numbers, headings and production notes.</p>
         <div className="format-example" aria-label="Supported timestamp examples"><code>00:00:19:02 00:00:20:22<br />00:00:19:02 - 00:00:20:22<br />01:00:19.080 --&gt; 01:00:20.880</code></div>
-        <div className="upload-controls">
-          <label className={`file-input${isImporting ? " disabled" : ""}`}>Choose .docx<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFile} disabled={isImporting} /></label>
-        </div>
+        {!demonstration && <div className="upload-controls">
+          <label className={`file-input${isImporting || isReviewing ? " disabled" : ""}`}>Choose .docx<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFile} disabled={isImporting || isReviewing} /></label>
+        </div>}
         {isImporting && <p className="muted import-status" role="status">Interpreting transcript…</p>}
         {error && <p className="error" role="alert">{error}</p>}
         {cues.length > 0 && <>
@@ -248,26 +261,59 @@ export function SubtitleProofingTool() {
         </>}
       </section>
 
-      {cues.length > 0 && <section className={`card${activeStep === 2 ? " active-step" : ""}`} aria-labelledby="review-title">
-        <div className="section-heading"><div><h2 id="review-title">2. Proof the text</h2><p className="muted">The review proposes changes only. You remain responsible for every decision.</p>{suggestions.length === 0 && !isReviewing && <p>{hasCompletedReview ? layoutOnlyCues.length ? "No editorial changes were proposed. Caption layout still needs attention below." : "No changes were proposed. You can export the reviewed WebVTT." : "No proposals yet. Run the review against the BBC News Style Guide and BBC Subtitle Guidelines."}</p>}<button className="review-button" type="button" onClick={requestReview} disabled={isReviewing}>{isReviewing ? "Proofing…" : "Run proofing review"}</button></div></div>
-        {hasCompletedReview && suggestions.length > 0 && <div className="review-progress" aria-live="polite">
-          <div className="review-progress-summary"><strong>{suggestions.length} proposed edit{suggestions.length === 1 ? "" : "s"}</strong><span>{resolved} of {suggestions.length} actioned</span></div>
-          <div className="review-progress-track" role="progressbar" aria-label="Proposal review progress" aria-valuemin={0} aria-valuemax={suggestions.length} aria-valuenow={resolved}><span style={{ width: `${(resolved / suggestions.length) * 100}%` }} /></div>
-          <label className="remaining-filter"><input type="checkbox" checked={showRemainingOnly} onChange={(event) => setShowRemainingOnly(event.target.checked)} /> Show remaining proposals only</label>
+      {cues.length > 0 && <section className={`card${activeStep === 2 ? " active-step" : ""}`} aria-labelledby="review-title" aria-busy={isReviewing}>
+        <h2 id="review-title">2. Review the text in context</h2>
+        <p className="muted">The AI reads neighbouring cues together. It cannot hear the video. Check flagged passages against the audio and review the final video before delivery.</p>
+        {!demonstration && <button className="review-button" type="button" onClick={requestReview} disabled={isReviewing || isImporting || hasOpenEditor || (hasCompletedReview && unresolved > 0)}>{isReviewing ? "Reviewing…" : hasCompletedReview ? "Review current text again" : "Run proofing review"}</button>}
+        {isReviewing && <p role="status">Checking the transcript for edits and passages that need an audio check…</p>}
+        {hasCompletedReview && findings.length === 0 && <p role="status">No edits or audio checks were identified. This is not a guarantee that the transcript is error-free. Check the final video before delivery.</p>}
+        {hasCompletedReview && findings.length > 0 && <div className="review-progress" ref={progressRef} tabIndex={-1} aria-label="Review progress">
+          <div className="review-progress-summary" role="status"><strong>{editCount} proposed edit{editCount === 1 ? "" : "s"} · {checkCount} audio check{checkCount === 1 ? "" : "s"}</strong><span>{resolved} of {findings.length} resolved</span></div>
+          <div className="review-progress-track" role="progressbar" aria-label="Review progress" aria-valuemin={0} aria-valuemax={findings.length} aria-valuenow={resolved}><span style={{ width: `${resolved / findings.length * 100}%` }} /></div>
+          <label className="remaining-filter"><input type="checkbox" checked={showRemainingOnly} onChange={(event) => setShowRemainingOnly(event.target.checked)} /> Show unresolved items only</label>
         </div>}
-        {hasCompletedReview && showRemainingOnly && visibleSuggestions.length === 0 && layoutOnlyCues.length === 0 && <p className="muted">Every proposal has been actioned.</p>}
-        {visibleSuggestions.map(({ suggestion, index }) => {
-          const cue = cues.find((item) => item.id === suggestion.cueId);
-          const finalCue = resolvedCues.find((item) => item.id === suggestion.cueId);
-          const layoutIssue = overlongCues.find((issue) => issue.cueId === suggestion.cueId);
-          return <article className="suggestion" key={`${suggestion.cueId}-${index}`}>
-            <p className="cue-label">Cue {suggestion.cueId} · {cue?.start} → {cue?.end}</p>
-            <p><strong>Original:</strong> {cue?.text}</p>
-            <p><strong>Proposed:</strong> <ProposedText original={cue?.text ?? ""} proposed={suggestion.proposedText} /></p>
-            <p className="evidence">{suggestion.reason} <a href={referenceUrlFor(suggestion.referenceUrl, suggestion.referenceEntry)} target="_blank" rel="noreferrer"><span className="link-favicon" aria-hidden="true" />{referenceLabelFor(suggestion.referenceUrl)}: {suggestion.referenceEntry}</a></p>
-            {layoutIssue && finalCue && <CaptionLayout text={finalCue.text} lineCount={layoutIssue.lineCount} />}
-            <div className="resolution-actions"><button type="button" className={suggestion.resolution === "approved" ? "selected" : ""} onClick={() => resolve(index, "approved")}>Approve</button><button type="button" className={suggestion.resolution === "rejected" ? "selected" : ""} onClick={() => resolve(index, "rejected")}>Reject</button><button type="button" className={suggestion.resolution === "edited" || suggestion.isEditing ? "selected" : ""} onClick={() => beginEdit(index, finalCue?.text ?? suggestion.proposedText)}>Edit</button></div>
-            {suggestion.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveEdit(index); }}><label>Final text<textarea value={suggestion.editedText ?? finalCue?.text ?? suggestion.proposedText} onChange={(event) => updateEdit(index, event.target.value)} required /></label><button type="submit" disabled={!suggestion.editedText?.trim()}>Save edit</button></form>}
+        {hasCompletedReview && showRemainingOnly && visibleFindings.length === 0 && findings.length > 0 && <p className="muted">Every review item has a decision. You can show resolved items to revisit them.</p>}
+        <fieldset className="review-controls" disabled={isReviewing || !hasCompletedReview}>
+        <legend className="sr-only">Review decisions</legend>
+        {visibleFindings.map(({ finding, index }) => {
+          const isAudio = finding.kind === "audio_check";
+          const ids = new Set(finding.cues.map((member) => member.cueId));
+          const first = cues.findIndex((cue) => cue.id === finding.cues[0].cueId);
+          const last = cues.findIndex((cue) => cue.id === finding.cues.at(-1)!.cueId);
+          const context = resolvedCues.slice(Math.max(0, first - 1), last + 2);
+          const linked = finding.cues.length > 1;
+          return <article className={`suggestion${isAudio ? " audio-check" : ""}`} key={index} aria-labelledby={`finding-${index}`}>
+            <h3 id={`finding-${index}`}>{isAudio ? "Check against audio" : linked ? "Linked edit" : "Proposed edit"}</h3>
+            {linked && <p className="muted">Review these {finding.cues.length} cues together.</p>}
+            <p>{finding.reason}</p>
+            {isAudio && <p className="check-question"><strong>{finding.question}</strong></p>}
+            <details className="cue-context" open={isAudio}>
+              <summary>Read in context</summary>
+              <ol>{context.map((cue) => <li key={cue.id} className={ids.has(cue.id) ? "affected-cue" : ""}><span>Cue {cue.id} · {cue.start}</span> {cue.text}</li>)}</ol>
+            </details>
+            {finding.cues.map((member) => {
+              const cue = cues.find((item) => item.id === member.cueId)!;
+              const finalCue = resolvedCues.find((item) => item.id === member.cueId)!;
+              const layoutIssue = overlongCues.find((issue) => issue.cueId === member.cueId);
+              return <div className="finding-cue" key={member.cueId}>
+                <p className="cue-label">Cue {member.cueId} · {cue.start} → {cue.end}</p>
+                <p><strong>Original:</strong> {cue.text}</p>
+                {!isAudio && <p><strong>Proposed:</strong> <ProposedText original={cue.text} proposed={member.proposedText!} /></p>}
+                {finding.resolution === "edited" && <p><strong>Saved text:</strong> {finalCue.text}</p>}
+                {layoutIssue && <CaptionLayout text={finalCue.text} lineCount={layoutIssue.lineCount} />}
+              </div>;
+            })}
+            <p className="evidence"><a href={referenceUrlFor(finding.referenceUrl, finding.referenceEntry)} target="_blank" rel="noreferrer">{referenceLabelFor(finding.referenceUrl)}: {finding.referenceEntry}</a></p>
+            {finding.resolution && !finding.isEditing && <p className="decision-status">{finding.resolution === "approved" ? "Proposed edits approved" : finding.resolution === "edited" ? "Your edited text is saved" : isAudio ? "Audio checked — original text kept" : "Proposed edits rejected — original text kept"}</p>}
+            {!finding.isEditing && <div className="resolution-actions">
+              {!isAudio && <button type="button" className={finding.resolution === "approved" ? "selected" : ""} onClick={() => resolve(index, "approved")}>{linked ? "Approve linked edits" : "Approve edit"}</button>}
+              <button type="button" className={finding.resolution === "kept" ? "selected" : ""} onClick={() => resolve(index, "kept")}>{isAudio ? "Checked — keep original" : linked ? "Reject linked edits" : "Reject edit"}</button>
+              <button type="button" className="edit-decision" onClick={() => beginEdit(index)}>{isAudio ? "Edit after checking" : linked ? "Edit together" : "Edit"}</button>
+            </div>}
+            {finding.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveEdit(index); }}>
+              {finding.cues.map((member) => <label key={member.cueId}>Cue {member.cueId} final text<textarea value={finding.draftTexts?.[member.cueId] ?? ""} onChange={(event) => updateEdit(index, member.cueId, event.target.value)} required /></label>)}
+              <div className="form-actions"><button type="submit" disabled={!finding.cues.every((member) => finding.draftTexts?.[member.cueId]?.trim())}>{isAudio ? "Save checked text" : "Save edits together"}</button><button type="button" onClick={() => cancelEdit(index)}>Cancel</button></div>
+            </form>}
           </article>;
         })}
         {layoutOnlyCues.map(({ issue, cue }) => {
@@ -279,13 +325,14 @@ export function SubtitleProofingTool() {
             {edit?.isEditing && <form className="edit-field" onSubmit={(event) => { event.preventDefault(); saveDirectCueEdit(cue.id); }}><label>Final text<textarea value={edit.draft} onChange={(event) => updateDirectCueEdit(cue.id, event.target.value)} required /></label><button type="submit" disabled={!edit.draft.trim()}>Save edit</button></form>}
           </article>;
         })}
+        </fieldset>
       </section>}
 
       {cues.length > 0 && <section className={`card export-card${activeStep === 3 ? " active-step" : ""}`} aria-labelledby="export-title">
         <h2 id="export-title">3. Export WebVTT</h2>
-        <p className="muted">{!hasCompletedReview ? "Run and complete the proofing review before exporting." : unresolved ? `${unresolved} proposal${unresolved === 1 ? "" : "s"} still need${unresolved === 1 ? "s" : ""} a decision.` : overlongCues.length ? "Caption layout needs attention before export." : suggestions.length ? "All proposals have been resolved." : "The review found no proposed changes."}</p>
+        <p className="muted">{!hasCompletedReview ? "Complete a successful proofing review before exporting." : hasOpenEditor ? "Save or cancel your open edits before exporting." : unresolved ? `${unresolved} review item${unresolved === 1 ? "" : "s"} still need a decision.` : overlongCues.length ? "Caption layout needs attention before export." : "All review items are resolved. Check the exported subtitles against the final video before delivery."}</p>
         {overlongCues.length > 0 && <p className="error" role="alert">Cue{overlongCues.length === 1 ? "" : "s"} {overlongCues.map((cue) => `${cue.cueId} (${cue.lineCount} lines)`).join(", ")} cannot fit within two 42-character caption lines. Edit and save the affected cue in this review first. Re-upload only if its timing also needs changing.</p>}
-        <button type="button" onClick={downloadVtt} disabled={!hasCompletedReview || unresolved > 0 || overlongCues.length > 0}>Download .vtt</button>
+        <button type="button" onClick={downloadVtt} disabled={!exportReady}>Download .vtt</button>
       </section>}
     </main>
   );

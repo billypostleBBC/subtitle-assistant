@@ -25,14 +25,15 @@ describe("styleGuideUrlFor", () => {
 describe("review evidence", () => {
   it("accepts the BBC Subtitle Guidelines as proposal evidence", () => {
     expect(reviewSchema.parse({
-      suggestions: [{
-        cueId: "12",
-        proposedText: "I have lived here for four years.",
+      findings: [{
+        kind: "edit",
+        cues: [{ cueId: "12", proposedText: "I have lived here for four years." }],
+        question: null,
         reason: "A light edit makes difficult speech intelligible without polishing the speaker's voice.",
         referenceEntry: "13.1 Edit lightly",
         referenceUrl: BBC_SUBTITLE_GUIDE_URL,
       }],
-    }).suggestions[0].referenceUrl).toBe(BBC_SUBTITLE_GUIDE_URL);
+    }).findings[0].referenceUrl).toBe(BBC_SUBTITLE_GUIDE_URL);
   });
 
   it("deep-links subtitle guidance evidence and labels its source", () => {

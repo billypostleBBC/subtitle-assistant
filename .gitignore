@@ -23,3 +23,7 @@
 # Local tooling
 .DS_Store
 *.tsbuildinfo
+
+# Local verification evidence and browser sessions
+/output/
+/.playwright-cli/
